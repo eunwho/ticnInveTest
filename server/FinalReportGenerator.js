@@ -71,6 +71,62 @@ function loadDeviceStates() {
 }
 
 /**
+ * 고온 설정을 파일에서 읽어오는 함수
+ * @returns {Object} 고온 설정 정보
+ */
+function loadHighTempSettings() {
+  try {
+    const settingsPath = path.join(__dirname, 'high_temp_settings.json');
+    if (fs.existsSync(settingsPath)) {
+      const data = fs.readFileSync(settingsPath, 'utf-8');
+      const settings = JSON.parse(data);
+      console.log(`[FinalReportGenerator] High temp settings loaded: ${JSON.stringify(settings)}`);
+      return settings;
+    }
+  } catch (error) {
+    console.warn(`[FinalReportGenerator] Failed to load high temp settings: ${error.message}`);
+  }
+  
+  // 기본값
+  const defaultSettings = {
+    highTemp: false,
+    targetTemp: 75,
+    waitTime: 200,
+    readCount: 10
+  };
+  console.log(`[FinalReportGenerator] Using default high temp settings: ${JSON.stringify(defaultSettings)}`);
+  return defaultSettings;
+}
+
+/**
+ * 저온 설정을 파일에서 읽어오는 함수
+ * @returns {Object} 저온 설정 정보
+ */
+function loadLowTempSettings() {
+  try {
+    const settingsPath = path.join(__dirname, 'low_temp_settings.json');
+    if (fs.existsSync(settingsPath)) {
+      const data = fs.readFileSync(settingsPath, 'utf-8');
+      const settings = JSON.parse(data);
+      console.log(`[FinalReportGenerator] Low temp settings loaded: ${JSON.stringify(settings)}`);
+      return settings;
+    }
+  } catch (error) {
+    console.warn(`[FinalReportGenerator] Failed to load low temp settings: ${error.message}`);
+  }
+  
+  // 기본값
+  const defaultSettings = {
+    lowTemp: false,
+    targetTemp: -32,
+    waitTime: 200,
+    readCount: 10
+  };
+  console.log(`[FinalReportGenerator] Using default low temp settings: ${JSON.stringify(defaultSettings)}`);
+  return defaultSettings;
+}
+
+/**
  * 현재 날짜와 시간을 포맷된 문자열로 반환
  * @returns {string} YYYY-MM-DD HH:mm:ss 형식의 날짜시간 문자열
  */
@@ -323,6 +379,9 @@ function analyzeCSVFiles(csvFiles, directoryPath, deviceStates, productInput) {
                   if (!deviceResults[deviceName].measurements[voltage]) {
                     deviceResults[deviceName].measurements[voltage] = {
                       ...measurementData,
+                      totalTests: 0,
+                      passedTests: 0,
+                      failedTests: 0,
                       fileResults: {} // 파일별 결과를 저장할 객체
                     };
                   }
@@ -336,10 +395,15 @@ function analyzeCSVFiles(csvFiles, directoryPath, deviceStates, productInput) {
                   deviceResults[deviceName].measurements[voltage].fileResults[csvFile.filename] = {
                     aql: measurementData.aql,
                     measurements: measurementData.measurements,
-                    totalTests: measurementData.totalTests,
-                    passedTests: measurementData.passedTests,
-                    failedTests: measurementData.failedTests
+                    totalTests: measurementData.totalTests || 0,
+                    passedTests: measurementData.passedTests || 0,
+                    failedTests: measurementData.failedTests || 0
                   };
+                  
+                  // 전압별 통계 누적 (파일들이 여러 개일 수 있으므로)
+                  deviceResults[deviceName].measurements[voltage].totalTests += (measurementData.totalTests || 0);
+                  deviceResults[deviceName].measurements[voltage].passedTests += (measurementData.passedTests || 0);
+                  deviceResults[deviceName].measurements[voltage].failedTests += (measurementData.failedTests || 0);
                 }
               }
               
@@ -707,6 +771,50 @@ function generateFinalConclusions(deviceResults, deviceStates) {
 }
 
 /**
+ * CSV 파일에서 측정 섹션 추출 (헤더 + 데이터 행)
+ * @param {string} filePath - CSV 파일 경로
+ * @returns {Array} 측정 섹션 라인 배열
+ */
+function extractMeasurementSectionFromCSV(filePath) {
+  try {
+    const fileContent = fs.readFileSync(filePath, 'utf8');
+    const lines = fileContent.split('\n');
+    
+    // 측정 섹션 찾기 (INPUT,Product Number,1st,2nd... 헤더부터 시작)
+    let measurementLines = [];
+    let inMeasurementSection = false;
+    
+    for (const line of lines) {
+      // 테이블 헤더 찾기
+      if (line.includes('INPUT,Product Number,1st,2nd,3rd,4th,5th,6th,7th,8th,9th,10th,A.Q.L') ||
+          line.includes('INPUT,제품번호,1st,2nd,3rd,4th,5th,6th,7th,8th,9th,10th,A.Q.L')) {
+        inMeasurementSection = true;
+        measurementLines.push(line.trim());
+        continue;
+      }
+      
+      // 측정 섹션이 시작되었고, 데이터 행을 찾음
+      if (inMeasurementSection) {
+        // 빈 줄이 나오면 측정 섹션 종료
+        if (line.trim() === '' && measurementLines.length > 1) {
+          break;
+        }
+        // 빈 줄이 아닌 경우 추가
+        if (line.trim() !== '') {
+          measurementLines.push(line.trim());
+        }
+      }
+    }
+    
+    console.log(`[FinalReportGenerator] ${path.basename(filePath)}에서 측정 섹션 추출: ${measurementLines.length}줄`);
+    return measurementLines;
+  } catch (error) {
+    console.error(`[FinalReportGenerator] CSV 파일 읽기 실패: ${filePath}`, error);
+    return [];
+  }
+}
+
+/**
  * 최종보고서 파일 생성
  * @param {Object} finalConclusions - 최종 결론
  * @param {string} directoryPath - 디렉토리 경로
@@ -747,7 +855,7 @@ async function createFinalReportFile(finalConclusions, directoryPath, directoryN
     
     console.log(`[FinalReportGenerator] 보고서 파일 경로: ${reportFilePath}`);
     
-    // CSV 보고서 내용 생성 (실제 테스트 결과 기반 테이블)
+    // CSV 보고서 내용 생성
     let reportContent = '';
     
     // 헤더 정보 (실제 제품 입력 정보 사용)
@@ -767,168 +875,23 @@ async function createFinalReportFile(finalConclusions, directoryPath, directoryN
     reportContent += `Source Directory,${directoryName || path.basename(directoryPath)}\n`;
     reportContent += `\n`;
     
-    // 실제 테스트 결과 기반 테이블 생성
-    console.log(`[FinalReportGenerator] finalConclusions 데이터 구조:`, JSON.stringify(finalConclusions, null, 2));
+    // CSV 파일들을 검색하고 순서대로 처리
+    const csvFiles = scanCSVFilesInDirectory(directoryPath);
+    console.log(`[FinalReportGenerator] 발견된 CSV 파일: ${csvFiles.length}개`);
     
-    // 파일별 결과를 수집하기 위한 구조 생성
-    const fileResults = {};
-    const voltageList = ['18V', '24V', '30V'];
-    const deviceList = ['Device 1', 'Device 2', 'Device 3'];
-    
-    // 각 디바이스별로 파일별 결과 수집
-    for (const deviceName of deviceList) {
-      const deviceIndex = parseInt(deviceName.split(' ')[1]) - 1;
-      const isDeviceSelected = deviceStates[deviceIndex];
+    // 각 CSV 파일의 측정 섹션을 그대로 복사
+    for (const csvFile of csvFiles) {
+      const measurementLines = extractMeasurementSectionFromCSV(csvFile.filepath);
       
-      if (isDeviceSelected && finalConclusions[deviceName]) {
-        const deviceResult = finalConclusions[deviceName];
+      if (measurementLines.length > 0) {
+        // 파일명 헤더 추가
+        reportContent += `=== ${csvFile.filename} ===\n`;
         
-        // 각 전압별로 파일별 결과 수집
-        for (const voltage of voltageList) {
-          if (deviceResult.measurements && deviceResult.measurements[voltage]) {
-            const voltageData = deviceResult.measurements[voltage];
-            
-            // 파일별 결과가 있는 경우
-            if (voltageData.fileResults) {
-              for (const [fileName, fileResult] of Object.entries(voltageData.fileResults)) {
-                if (!fileResults[fileName]) {
-                  fileResults[fileName] = {};
-                }
-                if (!fileResults[fileName][deviceName]) {
-                  fileResults[fileName][deviceName] = {};
-                }
-                fileResults[fileName][deviceName][voltage] = fileResult.aql || 'N';
-              }
-            } else {
-              // 파일별 결과가 없는 경우 전체 결과 사용
-              const defaultFileName = `${voltage}_Default`;
-              if (!fileResults[defaultFileName]) {
-                fileResults[defaultFileName] = {};
-              }
-              if (!fileResults[defaultFileName][deviceName]) {
-                fileResults[defaultFileName][deviceName] = {};
-              }
-              fileResults[defaultFileName][deviceName][voltage] = voltageData.aql || 'N';
-            }
-          }
+        // 측정 데이터 라인들을 그대로 추가
+        for (const line of measurementLines) {
+          reportContent += `${line}\n`;
         }
-      }
-    }
-    
-    console.log(`[FinalReportGenerator] 수집된 파일별 결과:`, JSON.stringify(fileResults, null, 2));
-    
-    // 테이블 헤더 생성 (파일별로)
-    const fileNames = Object.keys(fileResults);
-    if (fileNames.length > 0) {
-      // 각 파일별로 테이블 생성
-      for (const fileName of fileNames) {
-        reportContent += `\n=== ${fileName} ===\n`;
-        reportContent += `INPUT,Product Number,1st,2nd,3rd,4th,5th,6th,7th,8th,9th,10th,A.Q.L\n`;
-        
-        // 각 전압별로 행 생성
-        for (const voltage of voltageList) {
-          // 각 디바이스별로 행 생성
-          for (let deviceIndex = 0; deviceIndex < 3; deviceIndex++) {
-            const deviceName = `Device ${deviceIndex + 1}`;
-            const productNumber = productNumbers[deviceIndex] || `C-00${deviceIndex + 1}`;
-            const isDeviceSelected = deviceStates[deviceIndex];
-            
-            if (isDeviceSelected && fileResults[fileName][deviceName]) {
-              // 실제 테스트 결과 사용
-              const result = fileResults[fileName][deviceName][voltage] || 'N';
-              
-              // 1st-10th 데이터 생성 (실제 측정값 사용)
-              const measurementData = [];
-              
-              // 파일별 결과에서 실제 측정값 가져오기
-              let actualMeasurements = [];
-              if (finalConclusions[deviceName] && 
-                  finalConclusions[deviceName].measurements && 
-                  finalConclusions[deviceName].measurements[voltage] &&
-                  finalConclusions[deviceName].measurements[voltage].fileResults &&
-                  finalConclusions[deviceName].measurements[voltage].fileResults[fileName] &&
-                  finalConclusions[deviceName].measurements[voltage].fileResults[fileName].measurements) {
-                actualMeasurements = finalConclusions[deviceName].measurements[voltage].fileResults[fileName].measurements;
-              } else if (finalConclusions[deviceName] && 
-                        finalConclusions[deviceName].measurements && 
-                        finalConclusions[deviceName].measurements[voltage] &&
-                        finalConclusions[deviceName].measurements[voltage].measurements) {
-                // 파일별 결과가 없으면 전체 측정값 사용
-                actualMeasurements = finalConclusions[deviceName].measurements[voltage].measurements;
-              }
-              
-              // 실제 측정값 사용 또는 기본값 설정
-              for (let i = 0; i < 10; i++) {
-                if (i < actualMeasurements.length && actualMeasurements[i] && actualMeasurements[i] !== '-') {
-                  measurementData.push(actualMeasurements[i]);
-                } else {
-                  // 측정값이 없는 경우 결과에 따라 적절한 값 생성
-                  if (result === 'G') {
-                    // G인 경우 정상 범위 내 값 생성 (200-242 범위)
-                    const baseValue = voltage === '18V' ? 200 : voltage === '24V' ? 220 : 240;
-                    measurementData.push((baseValue + Math.random() * 20).toFixed(1));
-                  } else {
-                    // N인 경우 범위 밖 값 또는 0 표시
-                    measurementData.push('0');
-                  }
-                }
-              }
-              
-              // 테이블 행 생성
-              reportContent += `${voltage},${productNumber},${measurementData.join(',')},${result}\n`;
-            } else {
-              // 선택되지 않은 디바이스는 "-.-" 표시
-              const measurementData = Array(10).fill('-.-');
-              reportContent += `${voltage},${productNumber},${measurementData.join(',')},-.-\n`;
-            }
-          }
-        }
-      }
-    } else {
-      // 파일별 결과가 없는 경우 기본 테이블 생성
-      reportContent += `INPUT,Product Number,1st,2nd,3rd,4th,5th,6th,7th,8th,9th,10th,A.Q.L\n`;
-      
-      for (const voltage of voltageList) {
-        for (let deviceIndex = 0; deviceIndex < 3; deviceIndex++) {
-          const deviceName = `Device ${deviceIndex + 1}`;
-          const productNumber = productNumbers[deviceIndex] || `C-00${deviceIndex + 1}`;
-          const isDeviceSelected = deviceStates[deviceIndex];
-          
-          if (isDeviceSelected && finalConclusions[deviceName]) {
-            const deviceResult = finalConclusions[deviceName];
-            const result = (deviceResult.measurements && deviceResult.measurements[voltage]) 
-              ? deviceResult.measurements[voltage].aql || 'N' 
-              : 'N';
-            
-            // 측정값 생성 (실제 측정값 사용)
-            const measurementData = [];
-            const actualMeasurements = deviceResult.measurements && 
-                                     deviceResult.measurements[voltage] &&
-                                     deviceResult.measurements[voltage].measurements 
-                                     ? deviceResult.measurements[voltage].measurements 
-                                     : [];
-            
-            for (let i = 0; i < 10; i++) {
-              if (i < actualMeasurements.length && actualMeasurements[i] && actualMeasurements[i] !== '-') {
-                measurementData.push(actualMeasurements[i]);
-              } else {
-                // 측정값이 없는 경우 결과에 따라 적절한 값 생성
-                if (result === 'G') {
-                  const baseValue = voltage === '18V' ? 200 : voltage === '24V' ? 220 : 240;
-                  measurementData.push((baseValue + Math.random() * 20).toFixed(1));
-                } else {
-                  // N인 경우 0 또는 범위 밖 값 표시
-                  measurementData.push('0');
-                }
-              }
-            }
-            
-            reportContent += `${voltage},${productNumber},${measurementData.join(',')},${result}\n`;
-          } else {
-            const measurementData = Array(10).fill('-.-');
-            reportContent += `${voltage},${productNumber},${measurementData.join(',')},-.-\n`;
-          }
-        }
+        reportContent += `\n`;
       }
     }
     
@@ -961,19 +924,129 @@ async function createFinalReportFile(finalConclusions, directoryPath, directoryN
     
     for (const [deviceName, result] of Object.entries(finalConclusions)) {
       const selectedStatus = result.isSelected ? 'Yes' : 'No';
-      reportContent += `${deviceName},${result.conclusion},${result.totalTests},${result.passedTests},${result.failedTests},${result.passRate}%,${selectedStatus}\n`;
+      
+      // deviceName (예: "Device 1")에서 숫자를 추출하여 Product Number로 변환
+      const deviceMatch = deviceName.match(/Device\s+(\d+)/);
+      let displayDeviceName = deviceName;
+      
+      if (deviceMatch) {
+        const deviceIndex = parseInt(deviceMatch[1]) - 1; // Device 1 -> index 0
+        if (deviceIndex >= 0 && deviceIndex < productNumbers.length) {
+          displayDeviceName = productNumbers[deviceIndex];
+        }
+      }
+      
+      reportContent += `${displayDeviceName},${result.conclusion},${result.totalTests},${result.passedTests},${result.failedTests},${result.passRate}%,${selectedStatus}\n`;
     }
     
     reportContent += `\n`;
     
-    // 채널별 상세 결과
+    // 채널별 상세 결과 (전압별로 표시)
     reportContent += `Channel Details\n`;
-    reportContent += `Device,Channel,Total Tests,Passed Tests,Failed Tests,Selected\n`;
+    reportContent += `Device,Channel,Total Cycles x 2 x ON/OFF times,G (Pass),NG (Fail),Selected\n`;
+    
+    const voltageList = ['18V', '24V', '30V'];
+    
+    // 사이클 수 계산 (CSV 파일명에서 사이클 번호 추출)
+    let maxCycle = 0;
+    const csvFilesForCycle = scanCSVFilesInDirectory(directoryPath);
+    for (const csvFile of csvFilesForCycle) {
+      const cycleMatch = csvFile.filename.match(/Cycle(\d+)/);
+      if (cycleMatch) {
+        const cycleNumber = parseInt(cycleMatch[1]);
+        if (cycleNumber > maxCycle) {
+          maxCycle = cycleNumber;
+        }
+      }
+    }
+    const totalCycles = maxCycle > 0 ? maxCycle : 1;
+    
+    // 고온/저온 설정에서 ON/OFF 회수 가져오기
+    const highTempSettings = loadHighTempSettings();
+    const lowTempSettings = loadLowTempSettings();
+    const onOffCount = highTempSettings.readCount || 3; // 고온측정설정의 ON/OFF 회수 사용 (기본값 3)
     
     for (const [deviceName, result] of Object.entries(finalConclusions)) {
       const selectedStatus = result.isSelected ? 'Yes' : 'No';
-      for (const [channelName, channelResult] of Object.entries(result.channels)) {
-        reportContent += `${deviceName},${channelName},${channelResult.totalTests},${channelResult.passedTests},${channelResult.failedTests},${selectedStatus}\n`;
+      
+      // deviceName (예: "Device 1")에서 숫자를 추출하여 Product Number로 변환
+      const deviceMatch = deviceName.match(/Device\s+(\d+)/);
+      let displayDeviceName = deviceName;
+      
+      if (deviceMatch) {
+        const deviceIndex = parseInt(deviceMatch[1]) - 1; // Device 1 -> index 0
+        if (deviceIndex >= 0 && deviceIndex < productNumbers.length) {
+          displayDeviceName = productNumbers[deviceIndex];
+        }
+      }
+      
+      // 첫 번째 전압에서는 Device 이름을 표시하고, 나머지는 빈 값
+      let isFirstVoltage = true;
+      
+      for (const voltage of voltageList) {
+        const channelData = result.measurements && result.measurements[voltage];
+        
+        if (channelData) {
+          // 각 전압별 데이터가 있는 경우
+          // Total Cycles x 2 (고온+저온) x ON/OFF 횟수
+          const totalTests = totalCycles * 2 * onOffCount;
+          
+          // G와 NG 개수 계산 (실제 측정값 기반)
+          let passCount = 0;
+          let failCount = 0;
+          
+          // fileResults에서 각 파일의 측정값들을 확인
+          if (channelData.fileResults) {
+            for (const [fileName, fileResult] of Object.entries(channelData.fileResults)) {
+              if (fileResult.measurements && Array.isArray(fileResult.measurements)) {
+                for (const measurement of fileResult.measurements) {
+                  if (measurement && measurement !== '-' && measurement !== '-.-') {
+                    const value = parseFloat(measurement);
+                    if (!isNaN(value)) {
+                      // 200-242 범위 내에 있으면 G, 아니면 NG
+                      if (value >= 200 && value <= 242) {
+                        passCount++;
+                      } else {
+                        failCount++;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } else if (channelData.measurements && Array.isArray(channelData.measurements)) {
+            // fileResults가 없으면 채널 데이터의 측정값들을 확인
+            for (const measurement of channelData.measurements) {
+              if (measurement && measurement !== '-' && measurement !== '-.-') {
+                const value = parseFloat(measurement);
+                if (!isNaN(value)) {
+                  // 200-242 범위 내에 있으면 G, 아니면 NG
+                  if (value >= 200 && value <= 242) {
+                    passCount++;
+                  } else {
+                    failCount++;
+                  }
+                }
+              }
+            }
+          }
+          
+          if (isFirstVoltage) {
+            reportContent += `${displayDeviceName},${voltage},${totalTests},${passCount},${failCount},${selectedStatus}\n`;
+            isFirstVoltage = false;
+          } else {
+            reportContent += `,${voltage},${totalTests},${passCount},${failCount},${selectedStatus}\n`;
+          }
+        } else {
+          // 전압별 데이터가 없는 경우
+          const totalTests = totalCycles * 2 * onOffCount;
+          if (isFirstVoltage) {
+            reportContent += `${displayDeviceName},${voltage},${totalTests},0,0,${selectedStatus}\n`;
+            isFirstVoltage = false;
+          } else {
+            reportContent += `,${voltage},${totalTests},0,0,${selectedStatus}\n`;
+          }
+        }
       }
     }
     
