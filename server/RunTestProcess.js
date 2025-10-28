@@ -686,6 +686,41 @@ export async function saveTotaReportTableToFile(data, channelVoltages = [5.0, 15
     try {
       // 파일 쓰기
       fs.writeFileSync(filePath, csvContent, 'utf8');
+      
+      // 파일 쓰기 완료 확인 (순차적 동작 보장)
+      let fileWriteConfirmed = false;
+      let retryCount = 0;
+      const maxRetries = 5;
+      
+      while (!fileWriteConfirmed && retryCount < maxRetries) {
+        try {
+          // 파일 존재 및 크기 확인
+          if (fs.existsSync(filePath)) {
+            const stats = fs.statSync(filePath);
+            if (stats.size > 0 && stats.size === csvContent.length) {
+              fileWriteConfirmed = true;
+              console.log(`[SaveData] ✅ 파일 저장 완료 확인: ${filename} (${stats.size} bytes)`);
+            } else {
+              console.log(`[SaveData] ⏳ 파일 저장 확인 중... 크기: ${stats.size}/${csvContent.length} bytes`);
+              await new Promise(resolve => setTimeout(resolve, 100)); // 100ms 대기
+              retryCount++;
+            }
+          } else {
+            console.log(`[SaveData] ⏳ 파일 존재 확인 중...`);
+            await new Promise(resolve => setTimeout(resolve, 100)); // 100ms 대기
+            retryCount++;
+          }
+        } catch (checkError) {
+          console.warn(`[SaveData] ⚠️ 파일 확인 중 오류: ${checkError.message}`);
+          await new Promise(resolve => setTimeout(resolve, 100)); // 100ms 대기
+          retryCount++;
+        }
+      }
+      
+      if (!fileWriteConfirmed) {
+        console.warn(`[SaveData] ⚠️ 파일 저장 완료 확인 실패 (${maxRetries}회 시도 후), 계속 진행`);
+      }
+      
       console.log(`[SaveData] ✅ 파일 저장 성공: ${filename}`);
       console.log(`[SaveData] 📄 저장된 파일 경로: ${filePath}`);
       
@@ -700,6 +735,39 @@ export async function saveTotaReportTableToFile(data, channelVoltages = [5.0, 15
         
         fs.mkdirSync(fallbackDir, { recursive: true });
         fs.writeFileSync(fallbackPath, csvContent, 'utf8');
+        
+        // fallback 파일 쓰기 완료 확인
+        let fallbackWriteConfirmed = false;
+        let fallbackRetryCount = 0;
+        const fallbackMaxRetries = 5;
+        
+        while (!fallbackWriteConfirmed && fallbackRetryCount < fallbackMaxRetries) {
+          try {
+            if (fs.existsSync(fallbackPath)) {
+              const stats = fs.statSync(fallbackPath);
+              if (stats.size > 0 && stats.size === csvContent.length) {
+                fallbackWriteConfirmed = true;
+                console.log(`[SaveData] ✅ 대체 경로 파일 저장 완료 확인: ${filename} (${stats.size} bytes)`);
+              } else {
+                console.log(`[SaveData] ⏳ 대체 경로 파일 저장 확인 중... 크기: ${stats.size}/${csvContent.length} bytes`);
+                await new Promise(resolve => setTimeout(resolve, 100)); // 100ms 대기
+                fallbackRetryCount++;
+              }
+            } else {
+              console.log(`[SaveData] ⏳ 대체 경로 파일 존재 확인 중...`);
+              await new Promise(resolve => setTimeout(resolve, 100)); // 100ms 대기
+              fallbackRetryCount++;
+            }
+          } catch (fallbackCheckError) {
+            console.warn(`[SaveData] ⚠️ 대체 경로 파일 확인 중 오류: ${fallbackCheckError.message}`);
+            await new Promise(resolve => setTimeout(resolve, 100)); // 100ms 대기
+            fallbackRetryCount++;
+          }
+        }
+        
+        if (!fallbackWriteConfirmed) {
+          console.warn(`[SaveData] ⚠️ 대체 경로 파일 저장 완료 확인 실패 (${fallbackMaxRetries}회 시도 후), 계속 진행`);
+        }
         
         console.log(`[SaveData] ✅ 대체 경로에 파일 저장 성공: ${fallbackPath}`);
         return { success: true, filename, filePath: fallbackPath, fallback: true };

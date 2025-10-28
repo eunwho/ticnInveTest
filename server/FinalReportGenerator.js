@@ -159,6 +159,64 @@ function getSafeTimestamp() {
 }
 
 /**
+ * saveTotaReportTableToFile 작업 완료를 기다리는 함수
+ * @param {string} directoryPath - 디렉토리 경로
+ * @param {number} timeoutMs - 최대 대기 시간 (밀리초)
+ * @returns {Promise<void>}
+ */
+async function waitForFileCompletion(directoryPath, timeoutMs = 30000) {
+  const startTime = Date.now();
+  const checkInterval = 1000; // 1초마다 체크
+  
+  console.log(`[FinalReportGenerator] 파일 완료 대기 시작 - 타임아웃: ${timeoutMs}ms`);
+  
+  while (Date.now() - startTime < timeoutMs) {
+    try {
+      // 디렉토리에서 최근 수정된 CSV 파일들 확인
+      const files = fs.readdirSync(directoryPath);
+      const csvFiles = files.filter(file => 
+        file.toLowerCase().endsWith('.csv') && 
+        !file.toLowerCase().includes('final') &&
+        !file.toLowerCase().includes('report')
+      );
+      
+      if (csvFiles.length > 0) {
+        // 가장 최근 파일의 수정 시간 확인
+        let mostRecentFile = null;
+        let mostRecentTime = 0;
+        
+        for (const file of csvFiles) {
+          const filePath = path.join(directoryPath, file);
+          const stats = fs.statSync(filePath);
+          if (stats.mtime.getTime() > mostRecentTime) {
+            mostRecentTime = stats.mtime.getTime();
+            mostRecentFile = file;
+          }
+        }
+        
+        // 최근 파일이 2초 이상 전에 수정되었다면 작업 완료로 간주
+        const timeSinceLastModification = Date.now() - mostRecentTime;
+        if (timeSinceLastModification > 2000) {
+          console.log(`[FinalReportGenerator] 파일 작업 완료 확인 - 최근 파일: ${mostRecentFile}, 수정 후 경과: ${timeSinceLastModification}ms`);
+          return;
+        } else {
+          console.log(`[FinalReportGenerator] 파일 작업 진행 중 - 최근 파일: ${mostRecentFile}, 수정 후 경과: ${timeSinceLastModification}ms`);
+        }
+      }
+      
+      // 1초 대기 후 다시 체크
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
+      
+    } catch (error) {
+      console.warn(`[FinalReportGenerator] 파일 완료 체크 중 오류: ${error.message}`);
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
+    }
+  }
+  
+  console.log(`[FinalReportGenerator] 파일 완료 대기 타임아웃 - ${timeoutMs}ms 경과`);
+}
+
+/**
  * 지정된 디렉토리에서 전압측정 CSV 파일들을 검색하고 분석하여 최종보고서 생성
  * @param {string} directoryPath - 분석할 디렉토리 경로
  * @param {string} directoryName - 디렉토리 이름 (파일명에 사용)
@@ -828,6 +886,10 @@ async function createFinalReportFile(finalConclusions, directoryPath, directoryN
     console.log(`[FinalReportGenerator] 최종보고서 파일 생성 시작`);
     console.log(`[FinalReportGenerator] 디렉토리 경로: ${directoryPath}`);
     
+    // saveTotaReportTableToFile 작업 완료 대기 (최대 30초)
+    console.log(`[FinalReportGenerator] saveTotaReportTableToFile 작업 완료 대기 중...`);
+    await waitForFileCompletion(directoryPath, 30000); // 30초 대기
+    
     // 디렉토리 존재 확인 및 생성
     if (!fs.existsSync(directoryPath)) {
       console.warn(`[FinalReportGenerator] 디렉토리가 존재하지 않음, 생성 시도: ${directoryPath}`);
@@ -895,163 +957,7 @@ async function createFinalReportFile(finalConclusions, directoryPath, directoryN
       }
     }
     
-    reportContent += `\n`;
-    
-    // Test results summary (xxx_Cycle_HighTemp_Test.csv와 동일한 형태)
-    let totalTests = 0;
-    let passedTests = 0;
-    let failedTests = 0;
-    
-    // 선택된 Device의 모든 측정값을 확인하여 통계 계산
-    for (const [deviceName, conclusion] of Object.entries(finalConclusions)) {
-      if (conclusion.isSelected && conclusion.totalTests > 0) {
-        totalTests += conclusion.totalTests;
-        passedTests += conclusion.passedTests;
-        failedTests += conclusion.failedTests;
-      }
-    }
-    
-    reportContent += `Test Results Summary\n`;
-    reportContent += `Total Tests,${totalTests}\n`;
-    reportContent += `Passed Tests,${passedTests}\n`;
-    reportContent += `Failed Tests,${failedTests}\n`;
-    reportContent += `Pass Rate,${totalTests > 0 ? ((passedTests / totalTests) * 100).toFixed(2) : 0}%\n`;
-    reportContent += `\n`;
-    
-    // 디바이스별 상세 결과
-    reportContent += `Device Details\n`;
-    reportContent += `Device,Conclusion,Total Tests,Passed Tests,Failed Tests,Pass Rate,Selected\n`;
-    
-    for (const [deviceName, result] of Object.entries(finalConclusions)) {
-      const selectedStatus = result.isSelected ? 'Yes' : 'No';
-      
-      // deviceName (예: "Device 1")에서 숫자를 추출하여 Product Number로 변환
-      const deviceMatch = deviceName.match(/Device\s+(\d+)/);
-      let displayDeviceName = deviceName;
-      
-      if (deviceMatch) {
-        const deviceIndex = parseInt(deviceMatch[1]) - 1; // Device 1 -> index 0
-        if (deviceIndex >= 0 && deviceIndex < productNumbers.length) {
-          displayDeviceName = productNumbers[deviceIndex];
-        }
-      }
-      
-      reportContent += `${displayDeviceName},${result.conclusion},${result.totalTests},${result.passedTests},${result.failedTests},${result.passRate}%,${selectedStatus}\n`;
-    }
-    
-    reportContent += `\n`;
-    
-    // 채널별 상세 결과 (전압별로 표시)
-    reportContent += `Channel Details\n`;
-    reportContent += `Device,Channel,Total Cycles x 2 x ON/OFF times,G (Pass),NG (Fail),Selected\n`;
-    
-    const voltageList = ['18V', '24V', '30V'];
-    
-    // 사이클 수 계산 (CSV 파일명에서 사이클 번호 추출)
-    let maxCycle = 0;
-    const csvFilesForCycle = scanCSVFilesInDirectory(directoryPath);
-    for (const csvFile of csvFilesForCycle) {
-      const cycleMatch = csvFile.filename.match(/Cycle(\d+)/);
-      if (cycleMatch) {
-        const cycleNumber = parseInt(cycleMatch[1]);
-        if (cycleNumber > maxCycle) {
-          maxCycle = cycleNumber;
-        }
-      }
-    }
-    const totalCycles = maxCycle > 0 ? maxCycle : 1;
-    
-    // 고온/저온 설정에서 ON/OFF 회수 가져오기
-    const highTempSettings = loadHighTempSettings();
-    const lowTempSettings = loadLowTempSettings();
-    const onOffCount = highTempSettings.readCount || 3; // 고온측정설정의 ON/OFF 회수 사용 (기본값 3)
-    
-    for (const [deviceName, result] of Object.entries(finalConclusions)) {
-      const selectedStatus = result.isSelected ? 'Yes' : 'No';
-      
-      // deviceName (예: "Device 1")에서 숫자를 추출하여 Product Number로 변환
-      const deviceMatch = deviceName.match(/Device\s+(\d+)/);
-      let displayDeviceName = deviceName;
-      
-      if (deviceMatch) {
-        const deviceIndex = parseInt(deviceMatch[1]) - 1; // Device 1 -> index 0
-        if (deviceIndex >= 0 && deviceIndex < productNumbers.length) {
-          displayDeviceName = productNumbers[deviceIndex];
-        }
-      }
-      
-      // 첫 번째 전압에서는 Device 이름을 표시하고, 나머지는 빈 값
-      let isFirstVoltage = true;
-      
-      for (const voltage of voltageList) {
-        const channelData = result.measurements && result.measurements[voltage];
-        
-        if (channelData) {
-          // 각 전압별 데이터가 있는 경우
-          // Total Cycles x 2 (고온+저온) x ON/OFF 횟수
-          const totalTests = totalCycles * 2 * onOffCount;
-          
-          // G와 NG 개수 계산 (실제 측정값 기반)
-          let passCount = 0;
-          let failCount = 0;
-          
-          // fileResults에서 각 파일의 측정값들을 확인
-          if (channelData.fileResults) {
-            for (const [fileName, fileResult] of Object.entries(channelData.fileResults)) {
-              if (fileResult.measurements && Array.isArray(fileResult.measurements)) {
-                for (const measurement of fileResult.measurements) {
-                  if (measurement && measurement !== '-' && measurement !== '-.-') {
-                    const value = parseFloat(measurement);
-                    if (!isNaN(value)) {
-                      // 200-242 범위 내에 있으면 G, 아니면 NG
-                      if (value >= 200 && value <= 242) {
-                        passCount++;
-                      } else {
-                        failCount++;
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          } else if (channelData.measurements && Array.isArray(channelData.measurements)) {
-            // fileResults가 없으면 채널 데이터의 측정값들을 확인
-            for (const measurement of channelData.measurements) {
-              if (measurement && measurement !== '-' && measurement !== '-.-') {
-                const value = parseFloat(measurement);
-                if (!isNaN(value)) {
-                  // 200-242 범위 내에 있으면 G, 아니면 NG
-                  if (value >= 200 && value <= 242) {
-                    passCount++;
-                  } else {
-                    failCount++;
-                  }
-                }
-              }
-            }
-          }
-          
-          if (isFirstVoltage) {
-            reportContent += `${displayDeviceName},${voltage},${totalTests},${passCount},${failCount},${selectedStatus}\n`;
-            isFirstVoltage = false;
-          } else {
-            reportContent += `,${voltage},${totalTests},${passCount},${failCount},${selectedStatus}\n`;
-          }
-        } else {
-          // 전압별 데이터가 없는 경우
-          const totalTests = totalCycles * 2 * onOffCount;
-          if (isFirstVoltage) {
-            reportContent += `${displayDeviceName},${voltage},${totalTests},0,0,${selectedStatus}\n`;
-            isFirstVoltage = false;
-          } else {
-            reportContent += `,${voltage},${totalTests},0,0,${selectedStatus}\n`;
-          }
-        }
-      }
-    }
-    
-    reportContent += `\n`;
-    
+    reportContent += `\n`;    
     // 통계 정보 (선택된 디바이스만)
     const selectedDevices = Object.values(finalConclusions).filter(c => c.isSelected);
     const totalSelectedDevices = selectedDevices.length;
