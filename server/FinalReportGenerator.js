@@ -364,6 +364,41 @@ function isVoltageMeasurementFile(filename) {
 }
 
 /**
+ * 파일명에서 타임스탬프를 추출하여 Date 객체로 변환
+ * @param {string} filename - 파일명 (예: "2025-10-28_11-45-44_Cycle1_HighTemp_Test.csv")
+ * @returns {Date|null} 타임스탬프를 Date 객체로 변환한 값, 추출 실패 시 null
+ */
+function extractTimestampFromFilename(filename) {
+  try {
+    // 파일명에서 타임스탬프 패턴 추출 (YYYY-MM-DD_HH-mm-ss)
+    // 예: "2025-10-28_11-45-44_Cycle1_HighTemp_Test.csv" -> "2025-10-28_11-45-44"
+    const timestampMatch = filename.match(/^(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})/);
+    
+    if (timestampMatch) {
+      const datePart = timestampMatch[1]; // "2025-10-28"
+      const hour = timestampMatch[2];     // "11"
+      const minute = timestampMatch[3];   // "45"
+      const second = timestampMatch[4];   // "44"
+      
+      // "2025-10-28 11:45:44" 형식으로 변환
+      const dateTimeStr = `${datePart} ${hour}:${minute}:${second}`;
+      
+      // Date 객체 생성
+      const date = new Date(dateTimeStr);
+      
+      // 유효한 날짜인지 확인
+      if (!isNaN(date.getTime())) {
+        return date;
+      }
+    }
+  } catch (error) {
+    console.warn(`[FinalReportGenerator] 타임스탬프 추출 실패: ${filename}`, error);
+  }
+  
+  return null;
+}
+
+/**
  * CSV 파일들을 분석하여 디바이스별 결과 생성 (상세한 전압 테이블 데이터 포함)
  * @param {Array} csvFiles - 분석할 CSV 파일 목록
  * @param {string} directoryPath - 디렉토리 경로
@@ -940,6 +975,34 @@ async function createFinalReportFile(finalConclusions, directoryPath, directoryN
     // CSV 파일들을 검색하고 순서대로 처리
     const csvFiles = scanCSVFilesInDirectory(directoryPath);
     console.log(`[FinalReportGenerator] 발견된 CSV 파일: ${csvFiles.length}개`);
+    
+    // 파일명의 타임스탬프 기준으로 오름차순 정렬 (오래된 파일부터)
+    csvFiles.sort((a, b) => {
+      const timestampA = extractTimestampFromFilename(a.filename);
+      const timestampB = extractTimestampFromFilename(b.filename);
+      
+      // 타임스탬프가 둘 다 있는 경우 타임스탬프로 정렬
+      if (timestampA && timestampB) {
+        return timestampA.getTime() - timestampB.getTime();
+      }
+      
+      // 타임스탬프가 하나만 있는 경우, 타임스탬프가 있는 것을 앞에 배치
+      if (timestampA && !timestampB) {
+        return -1;
+      }
+      if (!timestampA && timestampB) {
+        return 1;
+      }
+      
+      // 타임스탬프가 둘 다 없는 경우 파일명으로 정렬
+      return a.filename.localeCompare(b.filename);
+    });
+    
+    console.log(`[FinalReportGenerator] 타임스탬프 기준 정렬 완료 (오래된 파일부터)`);
+    csvFiles.forEach((file, index) => {
+      const timestamp = extractTimestampFromFilename(file.filename);
+      console.log(`[FinalReportGenerator] ${index + 1}. ${file.filename} (타임스탬프: ${timestamp ? timestamp.toISOString() : '없음'})`);
+    });
     
     // 각 CSV 파일의 측정 섹션을 그대로 복사
     for (const csvFile of csvFiles) {
