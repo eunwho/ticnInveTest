@@ -660,8 +660,8 @@ async function executeDeviceReading(getTableOption, voltageIndex, deviceIndex, r
     let retryCount = 0;
     
     // 딜레이 설정 로드
-    const onDelay = getTableOption.delaySettings.onDelay;
-    const offDelay = getTableOption.delaySettings.offDelay;
+    const onDelay = (getTableOption.delaySettings.onDelay * 1000);
+    const offDelay = (getTableOption.delaySettings.offDelay * 1000);
     
     // 디바이스 선택 재시도 로직
     let deviceSelectSuccess = false;
@@ -688,6 +688,7 @@ async function executeDeviceReading(getTableOption, voltageIndex, deviceIndex, r
 
         if (selectResult === true || selectResult.success === true) {
           deviceSelectSuccess = true;
+          await sleep( onDelay );
         } else {
           throw new Error(selectResult?.message || selectResult?.error || '알 수 없는 오류');
         }
@@ -708,7 +709,7 @@ async function executeDeviceReading(getTableOption, voltageIndex, deviceIndex, r
     const channelResults = []; // 배열로 초기화
     
     // 채널 변경을 위한 충분한 시간 확보
-    await sleep(2000);
+    // await sleep(2000);
     
     // 전압 읽기 재시도 로직 (채널 1개만)
     let voltReadSuccess = false;

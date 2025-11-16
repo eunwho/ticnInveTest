@@ -1257,8 +1257,8 @@ async function executeSingleRead(getTableOption, readIndex) {
     }
     
     // 딜레이 설정 로드
-    const onDelay = getTableOption.delaySettings.onDelay;
-    const offDelay = getTableOption.delaySettings.offDelay;
+    const onDelay = (getTableOption.delaySettings.onDelay)*1000;
+    const offDelay = (getTableOption.delaySettings.offDelay)*1000;
     
     // 프로세스 시작 전 포트 상태 초기화
 

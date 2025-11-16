@@ -864,6 +864,103 @@ function generateFinalConclusions(deviceResults, deviceStates) {
 }
 
 /**
+ * Product Number별 최종 결과 테이블 생성
+ * @param {Object} finalConclusions - 최종 결론
+ * @param {Array} deviceStates - 디바이스 선택 상태 배열
+ * @param {Object} productInput - 제품 입력 정보
+ * @returns {string} Product Number 결과 테이블 CSV 문자열
+ */
+function generateProductNumberResultTable(finalConclusions, deviceStates, productInput) {
+  const productNumbers = productInput?.productNames || ['A-001', 'B-002', 'C-003'];
+  let tableContent = '';
+  
+  // 헤더 추가
+  tableContent += `Product Number,Result\n`;
+  
+  // 각 Product Number에 대해 결과 생성
+  for (let i = 0; i < productNumbers.length; i++) {
+    const productNumber = productNumbers[i];
+    const deviceName = `Device ${i + 1}`;
+    const deviceConclusion = finalConclusions[deviceName];
+    
+    let result = '';
+    
+    if (deviceConclusion && deviceConclusion.isSelected) {
+      // Selected Device인 경우: 24V, 18V, 30V의 모든 파일에서 A.Q.L이 모두 G인지 확인
+      const requiredVoltages = ['24V', '18V', '30V'];
+      let allGood = true;
+      
+      for (const voltage of requiredVoltages) {
+        const measurementData = deviceConclusion.measurements?.[voltage];
+        
+        if (!measurementData) {
+          // 해당 전압에 대한 측정 데이터가 없으면 NG
+          allGood = false;
+          console.log(`[FinalReportGenerator] ${productNumber} (${deviceName}) ${voltage}: 측정 데이터 없음 - NG`);
+          break;
+        }
+        
+        // 파일별 결과가 있는 경우, 모든 파일에서 G인지 확인
+        const fileResults = measurementData.fileResults || {};
+        const fileCount = Object.keys(fileResults).length;
+        
+        if (fileCount > 0) {
+          // 여러 파일에서 측정한 경우, 모든 파일의 A.Q.L이 'G'인지 확인
+          for (const [filename, fileResult] of Object.entries(fileResults)) {
+            if (fileResult.aql !== 'G') {
+              allGood = false;
+              console.log(`[FinalReportGenerator] ${productNumber} (${deviceName}) ${voltage}: ${filename}에서 ${fileResult.aql} 발견 - NG`);
+              break;
+            }
+          }
+          
+          if (!allGood) {
+            break;
+          }
+        } else {
+          // 파일별 결과가 없으면 measurementData.aql 확인 (단일 파일인 경우)
+          if (measurementData.aql !== 'G') {
+            allGood = false;
+            console.log(`[FinalReportGenerator] ${productNumber} (${deviceName}) ${voltage}: ${measurementData.aql} - NG`);
+            break;
+          }
+        }
+      }
+      
+      result = allGood ? 'G' : 'NG';
+      
+      // 상세 로그 출력
+      const voltageResults = requiredVoltages.map(voltage => {
+        const measurementData = deviceConclusion.measurements?.[voltage];
+        if (!measurementData) return `${voltage}: N/A`;
+        
+        const fileResults = measurementData.fileResults || {};
+        const fileCount = Object.keys(fileResults).length;
+        
+        if (fileCount > 0) {
+          const fileAqls = Object.entries(fileResults).map(([filename, fileResult]) => 
+            `${path.basename(filename)}:${fileResult.aql}`
+          ).join(', ');
+          return `${voltage}(${fileCount}개 파일): ${fileAqls}`;
+        } else {
+          return `${voltage}: ${measurementData.aql || 'N/A'}`;
+        }
+      }).join(' | ');
+      
+      console.log(`[FinalReportGenerator] ${productNumber} (${deviceName}): ${result} - ${voltageResults}`);
+    } else {
+      // Not Selected Device인 경우
+      result = 'Not Selected';
+      console.log(`[FinalReportGenerator] ${productNumber} (${deviceName}): Not Selected`);
+    }
+    
+    tableContent += `${productNumber},${result}\n`;
+  }
+  
+  return tableContent;
+}
+
+/**
  * CSV 파일에서 측정 섹션 추출 (헤더 + 데이터 행)
  * @param {string} filePath - CSV 파일 경로
  * @returns {Array} 측정 섹션 라인 배열
@@ -970,6 +1067,11 @@ async function createFinalReportFile(finalConclusions, directoryPath, directoryN
     reportContent += `Test Type,Device Comprehensive Test Report\n`;
     reportContent += `Generated Date,${getFormattedDateTime()}\n`;
     reportContent += `Source Directory,${directoryName || path.basename(directoryPath)}\n`;
+    reportContent += `\n`;
+    
+    // Product Number 최종 결과 테이블 추가 (라인 12 위, 첫 번째 CSV 섹션 전)
+    const productNumberResultTable = generateProductNumberResultTable(finalConclusions, deviceStates, productInput);
+    reportContent += productNumberResultTable;
     reportContent += `\n`;
     
     // CSV 파일들을 검색하고 순서대로 처리
